@@ -170,7 +170,7 @@ if(CMAKE_COMPILER_IS_GNUCC)
 endif(CMAKE_COMPILER_IS_GNUCC)
 
 if(CMAKE_COMPILER_IS_CLANG)
-    if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 16)
+    if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 15)
         set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wdocumentation")
     endif()
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wmissing-declarations -Wmissing-prototypes -Wno-documentation-deprecated-sync -Wunreachable-code")
