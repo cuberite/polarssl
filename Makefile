@@ -1,10 +1,9 @@
 DESTDIR=/usr/local
 PREFIX=mbedtls_
-PERL ?= perl
 
 .SILENT:
 
-.PHONY: all no_test programs lib tests install uninstall clean test check covtest lcov apidoc apidoc_clean
+.PHONY: all no_test programs lib tests install uninstall clean test check lcov apidoc apidoc_clean
 
 all: programs tests
 	$(MAKE) post_build
@@ -22,37 +21,6 @@ tests: lib mbedtls_test
 
 mbedtls_test:
 	$(MAKE) -C tests mbedtls_test
-
-library/%:
-	$(MAKE) -C library $*
-programs/%:
-	$(MAKE) -C programs $*
-tests/%:
-	$(MAKE) -C tests $*
-
-.PHONY: generated_files
-generated_files: library/generated_files
-generated_files: programs/generated_files
-generated_files: tests/generated_files
-generated_files: visualc_files
-
-.PHONY: visualc_files
-VISUALC_FILES = visualc/VS2010/mbedTLS.sln visualc/VS2010/mbedTLS.vcxproj
-# TODO: $(app).vcxproj for each $(app) in programs/
-visualc_files: $(VISUALC_FILES)
-
-# Ensure that the .c files that generate_visualc_files.pl enumerates are
-# present before it runs. It doesn't matter if the files aren't up-to-date,
-# they just need to be present.
-$(VISUALC_FILES): | library/generated_files
-$(VISUALC_FILES): scripts/generate_visualc_files.pl
-$(VISUALC_FILES): scripts/data_files/vs2010-app-template.vcxproj
-$(VISUALC_FILES): scripts/data_files/vs2010-main-template.vcxproj
-$(VISUALC_FILES): scripts/data_files/vs2010-sln-template.sln
-# TODO: also the list of .c and .h source files, but not their content
-$(VISUALC_FILES):
-	echo "  Gen   $@ ..."
-	$(PERL) scripts/generate_visualc_files.pl
 
 ifndef WINDOWS
 install: no_test
@@ -91,6 +59,12 @@ uninstall:
 	done
 endif
 
+WARNING_BORDER      =*******************************************************\n
+NULL_ENTROPY_WARN_L1=****  WARNING!  MBEDTLS_TEST_NULL_ENTROPY defined! ****\n
+NULL_ENTROPY_WARN_L2=****  THIS BUILD HAS NO DEFINED ENTROPY SOURCES    ****\n
+NULL_ENTROPY_WARN_L3=****  AND IS *NOT* SUITABLE FOR PRODUCTION USE     ****\n
+
+NULL_ENTROPY_WARNING=\n$(WARNING_BORDER)$(NULL_ENTROPY_WARN_L1)$(NULL_ENTROPY_WARN_L2)$(NULL_ENTROPY_WARN_L3)$(WARNING_BORDER)
 
 WARNING_BORDER_LONG      =**********************************************************************************\n
 CTR_DRBG_128_BIT_KEY_WARN_L1=****  WARNING!  MBEDTLS_CTR_DRBG_USE_128_BIT_KEY defined!                      ****\n
@@ -107,27 +81,17 @@ ifndef WINDOWS
 	-scripts/config.py get MBEDTLS_CTR_DRBG_USE_128_BIT_KEY && ([ $$? -eq 0 ]) && \
 	    echo '$(CTR_DRBG_128_BIT_KEY_WARNING)'
 
+	# If NULL Entropy is configured, display an appropriate warning
+	-scripts/config.py get MBEDTLS_TEST_NULL_ENTROPY && ([ $$? -eq 0 ]) && \
+	    echo '$(NULL_ENTROPY_WARNING)'
 endif
 
-clean: clean_more_on_top
+clean:
 	$(MAKE) -C library clean
 	$(MAKE) -C programs clean
 	$(MAKE) -C tests clean
-
-clean_more_on_top:
 ifndef WINDOWS
 	find . \( -name \*.gcno -o -name \*.gcda -o -name \*.info \) -exec rm {} +
-endif
-
-neat: clean_more_on_top
-	$(MAKE) -C library neat
-	$(MAKE) -C programs neat
-	$(MAKE) -C tests neat
-ifndef WINDOWS
-	rm -f visualc/VS2010/*.vcxproj visualc/VS2010/mbedTLS.sln
-else
-	if exist visualc\VS2010\*.vcxproj del /Q /F visualc\VS2010\*.vcxproj
-	if exist visualc\VS2010\mbedTLS.sln del /Q /F visualc\VS2010\mbedTLS.sln
 endif
 
 check: lib tests
@@ -136,23 +100,15 @@ check: lib tests
 test: check
 
 ifndef WINDOWS
-# note: for coverage testing, build with:
-# make CFLAGS='--coverage -g3 -O0'
-covtest:
-	$(MAKE) check
-	programs/test/selftest
-	tests/compat.sh
-	tests/ssl-opt.sh
-
+# For coverage testing:
+# 1. Build with:
+#         make CFLAGS='--coverage -g3 -O0' LDFLAGS='--coverage'
+# 2. Run the relevant tests for the part of the code you're interested in.
+#    For the reference coverage measurement, see
+#    tests/scripts/basic-build-test.sh
+# 3. Run scripts/lcov.sh to generate an HTML report.
 lcov:
-	rm -rf Coverage
-	lcov --capture --initial --directory library -o files.info
-	lcov --rc lcov_branch_coverage=1 --capture --directory library -o tests.info
-	lcov --rc lcov_branch_coverage=1 --add-tracefile files.info --add-tracefile tests.info -o all.info
-	lcov --rc lcov_branch_coverage=1 --remove all.info -o final.info '*.h'
-	gendesc tests/Descriptions.txt -o descriptions
-	genhtml --title "mbed TLS" --description-file descriptions --keep-descriptions --legend --branch-coverage -o Coverage final.info
-	rm -f files.info tests.info all.info final.info descriptions
+	scripts/lcov.sh
 
 apidoc:
 	mkdir -p apidoc

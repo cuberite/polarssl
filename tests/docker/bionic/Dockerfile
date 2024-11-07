@@ -4,21 +4,13 @@
 # -------
 # Defines a Docker container suitable to build and run all tests (all.sh),
 # except for those that use a proprietary toolchain.
+#
+# WARNING: this Dockerfile is no longer maintained! See
+# https://github.com/Mbed-TLS/mbedtls-test/blob/master/README.md#quick-start
+# for the set of Docker images we use on the CI.
 
 # Copyright The Mbed TLS Contributors
-# SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License"); you may
-# not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#  http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
 ARG MAKEFLAGS_PARALLEL=""
 ARG MY_REGISTRY=
 
@@ -137,26 +129,26 @@ RUN cd /tmp \
 ENV GNUTLS_CLI=/usr/local/gnutls-3.4.10/bin/gnutls-cli
 ENV GNUTLS_SERV=/usr/local/gnutls-3.4.10/bin/gnutls-serv
 
-# Build libnettle 3.7.3 (needed by gnutls next)
+# Build libnettle 3.4 (needed by gnutls next)
 RUN cd /tmp \
-    && wget https://ftp.gnu.org/gnu/nettle/nettle-3.7.3.tar.gz -qO- | tar xz \
-    && cd nettle-3.7.3 \
+    && wget https://ftp.gnu.org/gnu/nettle/nettle-3.4.1.tar.gz -qO- | tar xz \
+    && cd nettle-3.4.1 \
     && ./configure --disable-documentation \
     && make ${MAKEFLAGS_PARALLEL} \
     && make install \
     && /sbin/ldconfig \
     && rm -rf /tmp/nettle*
 
-# Build gnutls next (3.7.2)
+# Build gnutls next (3.6.5)
 RUN cd /tmp \
-    && wget https://www.gnupg.org/ftp/gcrypt/gnutls/v3.7/gnutls-3.7.2.tar.xz -qO- | tar xJ \
-    && cd gnutls-3.7.2 \
-    && ./configure --prefix=/usr/local/gnutls-3.7.2 --exec_prefix=/usr/local/gnutls-3.7.2 \
+    && wget https://www.gnupg.org/ftp/gcrypt/gnutls/v3.6/gnutls-3.6.5.tar.xz -qO- | tar xJ \
+    && cd gnutls-3.6.5 \
+    && ./configure --prefix=/usr/local/gnutls-3.6.5 --exec_prefix=/usr/local/gnutls-3.6.5 \
         --with-included-libtasn1 --with-included-unistring --without-p11-kit \
         --disable-shared --disable-guile --disable-doc \
     && make ${MAKEFLAGS_PARALLEL} \
     && make install \
     && rm -rf /tmp/gnutls*
 
-ENV GNUTLS_NEXT_CLI=/usr/local/gnutls-3.7.2/bin/gnutls-cli
-ENV GNUTLS_NEXT_SERV=/usr/local/gnutls-3.7.2/bin/gnutls-serv
+ENV GNUTLS_NEXT_CLI=/usr/local/gnutls-3.6.5/bin/gnutls-cli
+ENV GNUTLS_NEXT_SERV=/usr/local/gnutls-3.6.5/bin/gnutls-serv

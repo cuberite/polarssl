@@ -6,19 +6,21 @@
 #     command but rather at the target level using the
 #     target_include_directories command. That way, it is easier to guarantee
 #     that targets are built using the proper list of include directories.
-#   + Use the PUBLIC and PRIVATE keywords to specifiy the scope of include
+#   + Use the PUBLIC and PRIVATE keywords to specify the scope of include
 #     directories. That way, a target linking to a library (using the
-#     target_link_librairies command) inherits from the library PUBLIC include
+#     target_link_libraries command) inherits from the library PUBLIC include
 #     directories and not from the PRIVATE ones.
+#   + Note: there is currently one remaining include_directories command in the
+#     CMake files. It is related to ZLIB support which is planned to be removed.
+#     When the support is removed, the associated include_directories command
+#     will be removed as well as this note.
 # - MBEDTLS_TARGET_PREFIX: CMake targets are designed to be alterable by calling
 #   CMake in order to avoid target name clashes, via the use of
 #   MBEDTLS_TARGET_PREFIX. The value of this variable is prefixed to the
 #   mbedtls, mbedx509, mbedcrypto and apidoc targets.
 #
 
-cmake_minimum_required(VERSION 3.13)
-
-include(CMakePackageConfigHelpers)
+cmake_minimum_required(VERSION 2.8.12)
 
 # https://cmake.org/cmake/help/latest/policy/CMP0011.html
 # Setting this policy is required in CMake >= 3.18.0, otherwise a warning is generated. The OLD
@@ -32,23 +34,23 @@ cmake_policy(SET CMP0011 NEW)
 cmake_policy(SET CMP0012 NEW)
 
 if(TEST_CPP)
-    project("mbed TLS" C CXX)
+    project("Mbed TLS" C CXX)
 else()
-    project("mbed TLS" C)
+    project("Mbed TLS" C)
 endif()
+
+include(GNUInstallDirs)
 
 # Set the project root directory.
 set(MBEDTLS_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
-option(ENABLE_PROGRAMS "Build mbed TLS programs." ON)
+option(USE_PKCS11_HELPER_LIBRARY "Build Mbed TLS with the pkcs11-helper library." OFF)
+option(ENABLE_ZLIB_SUPPORT "Build Mbed TLS with zlib library." OFF)
+
+option(ENABLE_PROGRAMS "Build Mbed TLS programs." ON)
 
 option(UNSAFE_BUILD "Allow unsafe builds. These builds ARE NOT SECURE." OFF)
 option(MBEDTLS_FATAL_WARNINGS "Compiler warnings treated as errors" ON)
-if(WIN32)
-    option(GEN_FILES "Generate the auto-generated files as needed" OFF)
-else()
-    option(GEN_FILES "Generate the auto-generated files as needed" ON)
-endif()
 
 string(REGEX MATCH "Clang" CMAKE_COMPILER_IS_CLANG "${CMAKE_C_COMPILER_ID}")
 string(REGEX MATCH "GNU" CMAKE_COMPILER_IS_GNU "${CMAKE_C_COMPILER_ID}")
@@ -57,12 +59,23 @@ string(REGEX MATCH "MSVC" CMAKE_COMPILER_IS_MSVC "${CMAKE_C_COMPILER_ID}")
 
 # the test suites currently have compile errors with MSVC
 if(CMAKE_COMPILER_IS_MSVC)
-    option(ENABLE_TESTING "Build mbed TLS tests." OFF)
+    option(ENABLE_TESTING "Build Mbed TLS tests." OFF)
 else()
-    option(ENABLE_TESTING "Build mbed TLS tests." ON)
+    option(ENABLE_TESTING "Build Mbed TLS tests." ON)
 endif()
 
 # Warning string - created as a list for compatibility with CMake 2.8
+set(WARNING_BORDER "*******************************************************\n")
+set(NULL_ENTROPY_WARN_L1 "****  WARNING!  MBEDTLS_TEST_NULL_ENTROPY defined!\n")
+set(NULL_ENTROPY_WARN_L2 "****  THIS BUILD HAS NO DEFINED ENTROPY SOURCES\n")
+set(NULL_ENTROPY_WARN_L3 "****  AND IS *NOT* SUITABLE FOR PRODUCTION USE\n")
+
+set(NULL_ENTROPY_WARNING "${WARNING_BORDER}"
+                         "${NULL_ENTROPY_WARN_L1}"
+                         "${NULL_ENTROPY_WARN_L2}"
+                         "${NULL_ENTROPY_WARN_L3}"
+                         "${WARNING_BORDER}")
+
 set(CTR_DRBG_128_BIT_KEY_WARN_L1 "****  WARNING!  MBEDTLS_CTR_DRBG_USE_128_BIT_KEY defined!\n")
 set(CTR_DRBG_128_BIT_KEY_WARN_L2 "****  Using 128-bit keys for CTR_DRBG limits the security of generated\n")
 set(CTR_DRBG_128_BIT_KEY_WARN_L3 "****  keys and operations that use random values generated to 128-bit security\n")
@@ -89,12 +102,32 @@ endif()
 if(MBEDTLS_PYTHON_EXECUTABLE)
 
     # If 128-bit keys are configured for CTR_DRBG, display an appropriate warning
-    execute_process(COMMAND ${MBEDTLS_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/config.py -f ${CMAKE_CURRENT_SOURCE_DIR}/include/mbedtls/mbedtls_config.h get MBEDTLS_CTR_DRBG_USE_128_BIT_KEY
+    execute_process(COMMAND ${MBEDTLS_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/config.py -f ${CMAKE_CURRENT_SOURCE_DIR}/include/mbedtls/config.h get MBEDTLS_CTR_DRBG_USE_128_BIT_KEY
                         RESULT_VARIABLE result)
     if(${result} EQUAL 0)
         message(WARNING ${CTR_DRBG_128_BIT_KEY_WARNING})
     endif()
 
+    # If NULL Entropy is configured, display an appropriate warning
+    execute_process(COMMAND ${MBEDTLS_PYTHON_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/config.py -f ${CMAKE_CURRENT_SOURCE_DIR}/include/mbedtls/config.h get MBEDTLS_TEST_NULL_ENTROPY
+                        RESULT_VARIABLE result)
+    if(${result} EQUAL 0)
+        message(WARNING ${NULL_ENTROPY_WARNING})
+
+        if(NOT UNSAFE_BUILD)
+            message(FATAL_ERROR "\
+\n\
+Warning! You have enabled MBEDTLS_TEST_NULL_ENTROPY. \
+This option is not safe for production use and negates all security \
+It is intended for development use only. \
+\n\
+To confirm you want to build with this option, re-run cmake with the \
+option: \n\
+  cmake -DUNSAFE_BUILD=ON ")
+
+            return()
+        endif()
+    endif()
 endif()
 
 # If this is the root project add longer list of available CMAKE_BUILD_TYPE values
@@ -104,55 +137,40 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         FORCE)
 endif()
 
+# Make MBEDTLS_CONFIG_FILE and MBEDTLS_USER_CONFIG_FILE into PATHs
+set(MBEDTLS_CONFIG_FILE "" CACHE FILEPATH "Mbed TLS config file (overrides default).")
+set(MBEDTLS_USER_CONFIG_FILE "" CACHE FILEPATH "Mbed TLS user config file (appended to default).")
+
 # Create a symbolic link from ${base_name} in the binary directory
 # to the corresponding path in the source directory.
+# Note: Copies the file(s) on Windows.
 function(link_to_source base_name)
-    # Get OS dependent path to use in `execute_process`
-    if (CMAKE_HOST_WIN32)
-        #mklink is an internal command of cmd.exe it can only work with \
-        string(REPLACE "/" "\\" link "${CMAKE_CURRENT_BINARY_DIR}/${base_name}")
-        string(REPLACE "/" "\\" target "${CMAKE_CURRENT_SOURCE_DIR}/${base_name}")
-    else()
-        set(link "${CMAKE_CURRENT_BINARY_DIR}/${base_name}")
-        set(target "${CMAKE_CURRENT_SOURCE_DIR}/${base_name}")
-    endif()
+    set(link "${CMAKE_CURRENT_BINARY_DIR}/${base_name}")
+    set(target "${CMAKE_CURRENT_SOURCE_DIR}/${base_name}")
 
     if (NOT EXISTS ${link})
         if (CMAKE_HOST_UNIX)
-            set(command ln -s ${target} ${link})
+            execute_process(COMMAND ln -s ${target} ${link}
+                RESULT_VARIABLE result
+                ERROR_VARIABLE output)
+
+            if (NOT ${result} EQUAL 0)
+                message(FATAL_ERROR "Could not create symbolic link for: ${target} --> ${output}")
+            endif()
         else()
             if (IS_DIRECTORY ${target})
-                set(command cmd.exe /c mklink /j ${link} ${target})
+                file(GLOB_RECURSE files FOLLOW_SYMLINKS RELATIVE ${target} "${target}/*")
+                foreach(file IN LISTS files)
+                    if(NOT IS_DIRECTORY "${target}/${file}")
+                        configure_file("${target}/${file}" "${link}/${file}" COPYONLY)
+                    endif()
+                endforeach(file)
             else()
-                set(command cmd.exe /c mklink /h ${link} ${target})
+                configure_file(${target} ${link} COPYONLY)
             endif()
-        endif()
-
-        execute_process(COMMAND ${command}
-            RESULT_VARIABLE result
-            ERROR_VARIABLE output)
-
-        if (NOT ${result} EQUAL 0)
-            message(FATAL_ERROR "Could not create symbolic link for: ${target} --> ${output}")
         endif()
     endif()
 endfunction(link_to_source)
-
-# Get the filename without the final extension (i.e. convert "a.b.c" to "a.b")
-function(get_name_without_last_ext dest_var full_name)
-    # Split into a list on '.' (but a cmake list is just a ';'-separated string)
-    string(REPLACE "." ";" ext_parts "${full_name}")
-    # Remove the last item if there are more than one
-    list(LENGTH ext_parts ext_parts_len)
-    if (${ext_parts_len} GREATER "1")
-        math(EXPR ext_parts_last_item "${ext_parts_len} - 1")
-        list(REMOVE_AT ext_parts ${ext_parts_last_item})
-    endif()
-    # Convert back to a string by replacing separators with '.'
-    string(REPLACE ";" "." no_ext_name "${ext_parts}")
-    # Copy into the desired variable
-    set(${dest_var} ${no_ext_name} PARENT_SCOPE)
-endfunction(get_name_without_last_ext)
 
 string(REGEX MATCH "Clang" CMAKE_COMPILER_IS_CLANG "${CMAKE_C_COMPILER_ID}")
 
@@ -207,12 +225,14 @@ if(CMAKE_COMPILER_IS_CLANG)
 endif(CMAKE_COMPILER_IS_CLANG)
 
 if(CMAKE_COMPILER_IS_IAR)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --warn_about_c_style_casts --warnings_are_errors -Ohz")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --warn_about_c_style_casts")
+    set(CMAKE_C_FLAGS_RELEASE     "-Ohz")
+    set(CMAKE_C_FLAGS_DEBUG       "--debug -On")
 endif(CMAKE_COMPILER_IS_IAR)
 
 if(CMAKE_COMPILER_IS_MSVC)
-    # Strictest warnings
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /W3")
+    # Strictest warnings, UTF-8 source and execution charset
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /W3 /utf-8")
 endif(CMAKE_COMPILER_IS_MSVC)
 
 if(MBEDTLS_FATAL_WARNINGS)
@@ -228,6 +248,10 @@ if(MBEDTLS_FATAL_WARNINGS)
             set(CMAKE_C_FLAGS_ASANDBG "${CMAKE_C_FLAGS_ASANDBG} -Wno-error=cpp")
         endif(UNSAFE_BUILD)
     endif(CMAKE_COMPILER_IS_CLANG OR CMAKE_COMPILER_IS_GNU)
+
+    if (CMAKE_COMPILER_IS_IAR)
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} --warnings_are_errors")
+    endif(CMAKE_COMPILER_IS_IAR)
 endif(MBEDTLS_FATAL_WARNINGS)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Coverage")
@@ -237,15 +261,25 @@ if(CMAKE_BUILD_TYPE STREQUAL "Coverage")
 endif(CMAKE_BUILD_TYPE STREQUAL "Coverage")
 
 if(LIB_INSTALL_DIR)
-else()
-    set(LIB_INSTALL_DIR lib)
+    set(CMAKE_INSTALL_LIBDIR "${LIB_INSTALL_DIR}")
 endif()
+
+if(ENABLE_ZLIB_SUPPORT)
+    find_package(ZLIB)
+
+    if(ZLIB_FOUND)
+        include_directories(${ZLIB_INCLUDE_DIR})
+    endif(ZLIB_FOUND)
+endif(ENABLE_ZLIB_SUPPORT)
 
 add_subdirectory(include)
 
 add_subdirectory(3rdparty)
+list(APPEND libs ${thirdparty_lib})
 
 add_subdirectory(library)
+
+add_subdirectory(pkgconfig)
 
 #
 # The C files in tests/src directory contain test code shared among test suites
@@ -262,12 +296,37 @@ add_subdirectory(library)
 # to define the test executables.
 #
 if(ENABLE_TESTING OR ENABLE_PROGRAMS)
-    file(GLOB MBEDTLS_TEST_FILES ${CMAKE_CURRENT_SOURCE_DIR}/tests/src/*.c ${CMAKE_CURRENT_SOURCE_DIR}/tests/src/drivers/*.c)
+    file(GLOB MBEDTLS_TEST_FILES
+         ${CMAKE_CURRENT_SOURCE_DIR}/tests/src/*.c
+         ${CMAKE_CURRENT_SOURCE_DIR}/tests/src/drivers/*.c)
     add_library(mbedtls_test OBJECT ${MBEDTLS_TEST_FILES})
     target_include_directories(mbedtls_test
         PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/include
         PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
         PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/library)
+
+    file(GLOB MBEDTLS_TEST_HELPER_FILES
+         ${CMAKE_CURRENT_SOURCE_DIR}/tests/src/test_helpers/*.c)
+    add_library(mbedtls_test_helpers OBJECT ${MBEDTLS_TEST_HELPER_FILES})
+    target_include_directories(mbedtls_test_helpers
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/include
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/library
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/everest/include)
+
+    # Pass-through MBEDTLS_CONFIG_FILE and MBEDTLS_USER_CONFIG_FILE
+    if(MBEDTLS_CONFIG_FILE)
+        target_compile_definitions(mbedtls_test
+            PUBLIC MBEDTLS_CONFIG_FILE="${MBEDTLS_CONFIG_FILE}")
+        target_compile_definitions(mbedtls_test_helpers
+            PUBLIC MBEDTLS_CONFIG_FILE="${MBEDTLS_CONFIG_FILE}")
+    endif()
+    if(MBEDTLS_USER_CONFIG_FILE)
+        target_compile_definitions(mbedtls_test
+            PUBLIC MBEDTLS_USER_CONFIG_FILE="${MBEDTLS_USER_CONFIG_FILE}")
+        target_compile_definitions(mbedtls_test_helpers
+            PUBLIC MBEDTLS_USER_CONFIG_FILE="${MBEDTLS_USER_CONFIG_FILE}")
+    endif()
 endif()
 
 if(ENABLE_PROGRAMS)
@@ -286,22 +345,15 @@ if(ENABLE_TESTING)
     # additional convenience targets for Unix only
     if(UNIX)
 
-        ADD_CUSTOM_TARGET(covtest
-            COMMAND make test
-            COMMAND programs/test/selftest
-            COMMAND tests/compat.sh
-            COMMAND tests/ssl-opt.sh
-        )
-
+        # For coverage testing:
+        # 1. Build with:
+        #         cmake -D CMAKE_BUILD_TYPE=Coverage /path/to/source && make
+        # 2. Run the relevant tests for the part of the code you're interested in.
+        #    For the reference coverage measurement, see
+        #    tests/scripts/basic-build-test.sh
+        # 3. Run scripts/lcov.sh to generate an HTML report.
         ADD_CUSTOM_TARGET(lcov
-            COMMAND rm -rf Coverage
-            COMMAND lcov --capture --initial --directory library/CMakeFiles/mbedtls.dir -o files.info
-            COMMAND lcov --capture --directory library/CMakeFiles/mbedtls.dir -o tests.info
-            COMMAND lcov --add-tracefile files.info --add-tracefile tests.info -o all.info
-            COMMAND lcov --remove all.info -o final.info '*.h'
-            COMMAND gendesc tests/Descriptions.txt -o descriptions
-            COMMAND genhtml --title "mbed TLS" --description-file descriptions --keep-descriptions --legend --no-branch-coverage -o Coverage final.info
-            COMMAND rm -f files.info tests.info all.info final.info descriptions
+            COMMAND scripts/lcov.sh
         )
 
         ADD_CUSTOM_TARGET(memcheck
@@ -321,38 +373,4 @@ if(ENABLE_TESTING)
         configure_file(${CMAKE_CURRENT_SOURCE_DIR}/DartConfiguration.tcl
                     ${CMAKE_CURRENT_BINARY_DIR}/DartConfiguration.tcl COPYONLY)
     endif()
-endif()
-
-configure_package_config_file(
-    "cmake/MbedTLSConfig.cmake.in"
-    "cmake/MbedTLSConfig.cmake"
-        INSTALL_DESTINATION "cmake")
-
-write_basic_package_version_file(
-    "cmake/MbedTLSConfigVersion.cmake"
-        COMPATIBILITY SameMajorVersion
-        VERSION 3.1.0)
-
-install(
-    FILES "${CMAKE_CURRENT_BINARY_DIR}/cmake/MbedTLSConfig.cmake"
-          "${CMAKE_CURRENT_BINARY_DIR}/cmake/MbedTLSConfigVersion.cmake"
-    DESTINATION "cmake")
-
-export(
-    EXPORT MbedTLSTargets
-    NAMESPACE MbedTLS::
-    FILE "cmake/MbedTLSTargets.cmake")
-
-install(
-    EXPORT MbedTLSTargets
-    NAMESPACE MbedTLS::
-    DESTINATION "cmake"
-    FILE "MbedTLSTargets.cmake")
-
-if(CMAKE_VERSION VERSION_GREATER 3.15 OR CMAKE_VERSION VERSION_EQUAL 3.15)
-    # Do not export the package by default
-    cmake_policy(SET CMP0090 NEW)
-
-    # Make this package visible to the system
-    export(PACKAGE MbedTLS)
 endif()
